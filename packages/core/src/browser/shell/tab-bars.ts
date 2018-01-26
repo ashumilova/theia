@@ -5,7 +5,7 @@
  * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
  */
 
-import { TabBar, Title, Widget, DockPanel } from '@phosphor/widgets';
+import { TabBar, Title, Widget } from '@phosphor/widgets';
 import { VirtualElement, h, VirtualDOM, ElementInlineStyle } from '@phosphor/virtualdom';
 import { MenuPath } from '../../common';
 import { ContextMenuRenderer } from '../context-menu-renderer';
@@ -21,15 +21,16 @@ export const SHELL_TABBAR_CONTEXT_MENU: MenuPath = ['shell-tabbar-context-menu']
 
 export const TabBarRendererFactory = Symbol('TabBarRendererFactory');
 
-export interface LabelRenderData {
+export interface SizeData {
     width: number;
     height: number;
-    paddingTop: number;
-    paddingBottom: number;
 }
 
 export interface SideBarRenderData extends TabBar.IRenderData<Widget> {
-    labelData?: LabelRenderData;
+    labelSize?: SizeData;
+    iconSize?: SizeData;
+    paddingTop?: number;
+    paddingBottom?: number;
 }
 
 /**
@@ -61,29 +62,56 @@ export class TabBarRenderer extends TabBar.Renderer {
         );
     }
 
-    createTabStyle({ zIndex, labelData }: SideBarRenderData): ElementInlineStyle {
-        if (labelData) {
-            const totalHeight = labelData.width + labelData.paddingTop + labelData.paddingBottom;
-            return {
-                zIndex: `${zIndex}`,
-                height: `${totalHeight}px`
-            };
-        } else {
-            return {
-                zIndex: `${zIndex}`
-            };
+    createTabStyle(data: SideBarRenderData): ElementInlineStyle {
+        const zIndex = `${data.zIndex}`;
+        const labelSize = data.labelSize;
+        const iconSize = data.iconSize;
+        let height: string | undefined;
+        if (labelSize || iconSize) {
+            const labelHeight = labelSize ? labelSize.width : 0;
+            const iconHeight = iconSize ? iconSize.height : 0;
+            let paddingTop = data.paddingTop || 0;
+            if (labelHeight > 0 && iconHeight > 0) {
+                // Leave some extra space between icon and label
+                paddingTop = paddingTop * 1.5;
+            }
+            const paddingBottom = data.paddingBottom || 0;
+            height = `${labelHeight + iconHeight + paddingTop + paddingBottom}px`;
         }
+        return { zIndex, height };
     }
 
     renderLabel(data: SideBarRenderData): VirtualElement {
-        let style: ElementInlineStyle | undefined;
-        if (data.labelData) {
-            style = {
-                width: `${data.labelData.width}px`,
-                height: `${data.labelData.height}px`,
-            };
+        const labelSize = data.labelSize;
+        const iconSize = data.iconSize;
+        let width: string | undefined;
+        let height: string | undefined;
+        let top: string | undefined;
+        if (labelSize) {
+            width = `${labelSize.width}px`;
+            height = `${labelSize.height}px`;
         }
+        if (data.paddingTop || iconSize) {
+            const iconHeight = iconSize ? iconSize.height : 0;
+            let paddingTop = data.paddingTop || 0;
+            if (iconHeight > 0) {
+                // Leave some extra space between icon and label
+                paddingTop = paddingTop * 1.5;
+            }
+            top = `${paddingTop + iconHeight}px`;
+        }
+        const style: ElementInlineStyle = { width, height, top };
         return h.div({ className: 'p-TabBar-tabLabel', style }, data.title.label);
+    }
+
+    renderIcon(data: SideBarRenderData): VirtualElement {
+        let top: string | undefined;
+        if (data.paddingTop) {
+            top = `${data.paddingTop || 0}px`;
+        }
+        const className = this.createIconClass(data);
+        const style: ElementInlineStyle = { top };
+        return h.div({ className, style }, data.title.iconLabel);
     }
 
     protected handleContextMenuEvent(event: MouseEvent, title: Title<Widget>) {
@@ -105,15 +133,6 @@ export class TabBarRenderer extends TabBar.Renderer {
 }
 
 /**
- * Data computed to determine drop targets.
- */
-export interface TabBarDropTarget {
-    index: number;
-    lastRect?: ClientRect;
-    nextRect?: ClientRect;
-}
-
-/**
  * A specialized tab bar for side areas.
  */
 export class SideTabBar extends TabBar<Widget> {
@@ -123,8 +142,6 @@ export class SideTabBar extends TabBar<Widget> {
 
     readonly tabAdded = new Signal<this, Title<Widget>>(this);
     readonly collapseRequested = new Signal<this, Title<Widget>>(this);
-
-    protected overlay: DockPanel.Overlay;
 
     private mouseData?: {
         pressX: number,
@@ -138,18 +155,10 @@ export class SideTabBar extends TabBar<Widget> {
         const hiddenContent = document.createElement('ul');
         hiddenContent.className = HIDDEN_CONTENT_CLASS;
         this.node.appendChild(hiddenContent);
-
-        this.overlay = new DockPanel.Overlay();
-        this.node.appendChild(this.overlay.node);
     }
 
     get hiddenContentNode(): HTMLUListElement {
         return this.node.getElementsByClassName(HIDDEN_CONTENT_CLASS)[0] as HTMLUListElement;
-    }
-
-    dispose(): void {
-        this.overlay.hide(0);
-        super.dispose();
     }
 
     insertTab(index: number, value: Title<Widget> | Title.IOptions<Widget>): Title<Widget> {
@@ -163,23 +172,31 @@ export class SideTabBar extends TabBar<Widget> {
         window.requestAnimationFrame(() => {
             const hiddenContent = this.hiddenContentNode;
             const n = hiddenContent.children.length;
-            const labelData = new Array<LabelRenderData>(n);
+            const renderData = new Array<Partial<SideBarRenderData>>(n);
             for (let i = 0; i < n; i++) {
                 const hiddenTab = hiddenContent.children[i];
                 const tabStyle = window.getComputedStyle(hiddenTab);
-                const label = hiddenTab.getElementsByClassName('p-TabBar-tabLabel')[0];
-                labelData[i] = {
-                    width: label.clientWidth,
-                    height: label.clientHeight,
-                    paddingTop: parseFloat(tabStyle.paddingTop!) || 0,
-                    paddingBottom: parseFloat(tabStyle.paddingBottom!) || 0
+                const rd: Partial<SideBarRenderData> = {
+                    paddingTop: parseFloat(tabStyle.paddingTop!),
+                    paddingBottom: parseFloat(tabStyle.paddingBottom!)
                 };
+                const labelElements = hiddenTab.getElementsByClassName('p-TabBar-tabLabel');
+                if (labelElements.length === 1) {
+                    const label = labelElements[0];
+                    rd.labelSize = { width: label.clientWidth, height: label.clientHeight };
+                }
+                const iconElements = hiddenTab.getElementsByClassName('p-TabBar-tabIcon');
+                if (iconElements.length === 1) {
+                    const icon = iconElements[0];
+                    rd.iconSize = { width: icon.clientWidth, height: icon.clientHeight };
+                }
+                renderData[i] = rd;
             }
-            this.renderTabs(this.contentNode, labelData);
+            this.renderTabs(this.contentNode, renderData);
         });
     }
 
-    protected renderTabs(host: HTMLElement, labelData?: LabelRenderData[]): void {
+    protected renderTabs(host: HTMLElement, renderData?: Partial<SideBarRenderData>[]): void {
         const titles = this.titles;
         const n = titles.length;
         const renderer = this.renderer as TabBarRenderer;
@@ -189,22 +206,15 @@ export class SideTabBar extends TabBar<Widget> {
             const title = titles[i];
             const current = title === currentTitle;
             const zIndex = current ? n : n - i - 1;
-            const labelDatum = labelData && i < labelData.length ? labelData[i] : undefined;
-            content[i] = renderer.renderTab({ title, current, zIndex, labelData: labelDatum });
+            let rd: SideBarRenderData;
+            if (renderData && i < renderData.length) {
+                rd = { title, current, zIndex, ...renderData[i] };
+            } else {
+                rd = { title, current, zIndex };
+            }
+            content[i] = renderer.renderTab(rd);
         }
         VirtualDOM.render(content, host);
-    }
-
-    protected showOverlay(clientX: number, clientY: number) {
-        const barRect = this.node.getBoundingClientRect();
-        const padding = SideTabBar.OVERLAY_PAD;
-        const overlayWidth = barRect.width - 2 * padding;
-        this.overlay.show({
-            top: padding,
-            bottom: barRect.height - (padding + overlayWidth),
-            left: padding,
-            right: padding
-        });
     }
 
     protected onBeforeAttach(msg: Message): void {

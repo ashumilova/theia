@@ -7,6 +7,9 @@
 | DockPanel
 |----------------------------------------------------------------------------*/
 
+.p-DockPanel.p-SplitPanel-child {
+  padding: 0px;
+}
 
 .p-DockPanel-widget {
   background: var(--theia-layout-color3);
@@ -38,9 +41,4 @@
 .p-DockPanel-overlay.p-mod-root-bottom,
 .p-DockPanel-overlay.p-mod-root-center {
   border-width: 2px;
-}
-
-
-#theia-main-content-panel {
-  padding: 0px;
 }

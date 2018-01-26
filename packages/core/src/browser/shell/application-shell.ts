@@ -15,13 +15,15 @@ import {
 import { Drag } from '@phosphor/dragdrop';
 import { Saveable } from '../saveable';
 import { StatusBarImpl, StatusBarLayoutData } from '../status-bar/status-bar';
-import { SidePanelHandler, SidePanel, MAIN_BOTTOM_AREA_CLASS, SidePanelHandlerFactory, TheiaDockPanel } from './side-panel-handler';
+import { SidePanelHandler, SidePanel, SidePanelHandlerFactory, TheiaDockPanel } from './side-panel-handler';
 import { TabBarRendererFactory, TabBarRenderer, SHELL_TABBAR_CONTEXT_MENU } from './tab-bars';
 
 /** The class name added to ApplicationShell instances. */
 const APPLICATION_SHELL_CLASS = 'theia-ApplicationShell';
 /** The class name added to the main area panel. */
 const MAIN_AREA_CLASS = 'theia-app-main';
+/** The class name added to the main and bottom area panels. */
+const MAIN_BOTTOM_AREA_CLASS = 'theia-app-centers';
 /** The class name added to the current widget's title. */
 const CURRENT_CLASS = 'theia-mod-current';
 /** The class name added to the active widget's title. */
@@ -57,40 +59,40 @@ export class DockPanelRenderer implements DockLayout.IRenderer {
 @injectable()
 export class ApplicationShell extends Widget {
 
+    readonly currentChanged = new Signal<this, FocusTracker.IChangedArgs<Widget>>(this);
+    readonly activeChanged = new Signal<this, FocusTracker.IChangedArgs<Widget>>(this);
+
     protected mainPanel: DockPanel;
     protected topPanel: Panel;
+    protected bottomPanel: DockPanel;
     protected leftPanelHandler: SidePanelHandler;
     protected rightPanelHandler: SidePanelHandler;
-    protected bottomPanelHandler: SidePanelHandler;
     protected sidePanelExpandThreshold = SidePanel.EMPTY_PANEL_SIZE;
+    protected lastBottomPanelSize?: number;
 
     private readonly tracker = new FocusTracker<Widget>();
     private widgetDragListener?: (event: Event) => void;
-
-    readonly currentChanged = new Signal<this, FocusTracker.IChangedArgs<Widget>>(this);
-    readonly activeChanged = new Signal<this, FocusTracker.IChangedArgs<Widget>>(this);
 
     /**
      * Construct a new application shell.
      */
     constructor(
-        @inject(DockPanelRenderer) dockPanelRenderer: DockPanelRenderer,
-        @inject(SidePanelHandlerFactory) sidePanelHandlerFactory: () => SidePanelHandler,
+        @inject(DockPanelRenderer) protected dockPanelRenderer: DockPanelRenderer,
         @inject(StatusBarImpl) protected readonly statusBar: StatusBarImpl,
+        @inject(SidePanelHandlerFactory) sidePanelHandlerFactory: () => SidePanelHandler,
         @inject(ApplicationShellOptions) @optional() options?: Widget.IOptions | undefined
     ) {
         super(options);
         this.addClass(APPLICATION_SHELL_CLASS);
         this.id = 'theia-app-shell';
 
+        this.mainPanel = this.createMainPanel();
         this.topPanel = this.createTopPanel();
-        this.mainPanel = this.createMainPanel(dockPanelRenderer);
+        this.bottomPanel = this.createBottomPanel();
         this.leftPanelHandler = sidePanelHandlerFactory();
         this.leftPanelHandler.create('left');
         this.rightPanelHandler = sidePanelHandlerFactory();
         this.rightPanelHandler.create('right');
-        this.bottomPanelHandler = sidePanelHandlerFactory();
-        this.bottomPanelHandler.create('bottom');
         this.layout = this.createLayout();
 
         this.tracker.currentChanged.connect(this.onCurrentChanged, this);
@@ -101,22 +103,49 @@ export class ApplicationShell extends Widget {
     }
 
     /**
+     * Create the dock panel, which holds the main area for widgets organized with tabs.
+     */
+    protected createMainPanel(): DockPanel {
+        const dockPanel = new TheiaDockPanel({
+            mode: 'multiple-document',
+            renderer: this.dockPanelRenderer,
+            spacing: 0
+        });
+        dockPanel.id = 'theia-main-content-panel';
+        return dockPanel;
+    }
+
+    /**
+     * Create the dock panel, which holds the main area for widgets organized with tabs.
+     */
+    protected createBottomPanel(): DockPanel {
+        const dockPanel = new TheiaDockPanel({
+            mode: 'multiple-document',
+            renderer: this.dockPanelRenderer,
+            spacing: 0
+        });
+        dockPanel.id = 'theia-bottom-content-panel';
+        dockPanel.widgetRemoved.connect((sender, widget) => {
+            if (dockPanel.isEmpty) {
+                this.collapseBottomPanel();
+            }
+        }, this);
+        dockPanel.panelAttached.connect(sender => {
+            if (!this.bottomPanel.isHidden && this.lastBottomPanelSize) {
+                this.setBottomPanelSize(this.lastBottomPanelSize);
+            }
+        }, this);
+        dockPanel.hide();
+        return dockPanel;
+    }
+
+    /**
      * Create the top panel, which is used to hold the main menu.
      */
     protected createTopPanel(): Panel {
         const topPanel = new Panel();
         topPanel.id = 'theia-top-panel';
         return topPanel;
-    }
-
-    /**
-     * Create the dock panel, which holds the main area for widgets organized with tabs.
-     */
-    protected createMainPanel(dockPanelRenderer: DockLayout.IRenderer): DockPanel {
-        const dockPanel = new TheiaDockPanel({ renderer: dockPanelRenderer });
-        dockPanel.id = 'theia-main-content-panel';
-        dockPanel.spacing = 0;
-        return dockPanel;
     }
 
     /**
@@ -157,7 +186,7 @@ export class ApplicationShell extends Widget {
      */
     protected createLayout(): Layout {
         const bottomSplitLayout = this.createSplitLayout(
-            [this.mainPanel, this.bottomPanelHandler.container],
+            [this.mainPanel, this.bottomPanel],
             [1, 0],
             { orientation: 'vertical', spacing: 2 }
         );
@@ -184,16 +213,19 @@ export class ApplicationShell extends Widget {
         }
         const initialPanelState = {
             leftCollapsed: this.leftPanelHandler.tabBar.currentTitle === null,
-            rightCollapsed: this.rightPanelHandler.tabBar.currentTitle === null
+            rightCollapsed: this.rightPanelHandler.tabBar.currentTitle === null,
+            bottomCollapsed: this.bottomPanel.isHidden
         };
         const modifiedPanelState = {
             leftExpanded: false,
-            rightExpanded: false
+            rightExpanded: false,
+            bottomExpanded: false
         };
         this.widgetDragListener = event => {
             if (event.type === 'mousemove') {
-                const { clientX } = event as MouseEvent;
-                if (clientX <= this.sidePanelExpandThreshold) {
+                const { clientX, clientY } = event as MouseEvent;
+                const threshold = this.sidePanelExpandThreshold;
+                if (clientX <= threshold) {
                     if (!modifiedPanelState.leftExpanded) {
                         this.leftPanelHandler.expand();
                         modifiedPanelState.leftExpanded = true;
@@ -202,7 +234,7 @@ export class ApplicationShell extends Widget {
                     this.leftPanelHandler.collapse();
                     modifiedPanelState.leftExpanded = false;
                 }
-                if (clientX >= window.innerWidth - this.sidePanelExpandThreshold) {
+                if (clientX >= window.innerWidth - threshold) {
                     if (!modifiedPanelState.rightExpanded) {
                         this.rightPanelHandler.expand();
                         modifiedPanelState.rightExpanded = true;
@@ -211,49 +243,103 @@ export class ApplicationShell extends Widget {
                     this.rightPanelHandler.collapse();
                     modifiedPanelState.rightExpanded = false;
                 }
+                const statusBarHeight = this.statusBar.node.clientHeight;
+                if (clientY >= window.innerHeight - threshold - statusBarHeight) {
+                    if (!modifiedPanelState.bottomExpanded) {
+                        this.expandBottomPanel();
+                        modifiedPanelState.bottomExpanded = true;
+                    }
+                } else if (initialPanelState.bottomCollapsed && modifiedPanelState.bottomExpanded) {
+                    this.collapseBottomPanel();
+                    modifiedPanelState.bottomExpanded = false;
+                }
             }
         };
-        document.addEventListener('mousemove', this.widgetDragListener, { capture: true });
+        document.addEventListener('mousemove', this.widgetDragListener, true);
     }
 
     protected onWidgetDragEnded(drag: Drag) {
         if (this.widgetDragListener) {
-            document.removeEventListener('mousemove', this.widgetDragListener, { capture: true });
+            document.removeEventListener('mousemove', this.widgetDragListener, true);
             this.leftPanelHandler.refresh();
             this.rightPanelHandler.refresh();
+            if (this.bottomPanel.isEmpty) {
+                this.collapseBottomPanel();
+            }
             this.widgetDragListener = undefined;
         }
     }
 
     getLayoutData(): ApplicationShell.LayoutData {
         return {
-            mainArea: this.mainPanel.saveLayout(),
+            mainPanel: this.mainPanel.saveLayout(),
+            bottomPanel: {
+                config: this.bottomPanel.saveLayout(),
+                size: this.getBottomPanelSize(),
+                expanded: this.isExpanded('bottom')
+            },
             leftPanel: this.leftPanelHandler.getLayoutData(),
             rightPanel: this.rightPanelHandler.getLayoutData(),
-            bottomPanel: this.bottomPanelHandler.getLayoutData(),
             statusBar: this.statusBar.getLayoutData()
         };
     }
 
-    setLayoutData(layoutData: ApplicationShell.LayoutData): void {
-        if (layoutData.mainArea) {
-            this.mainPanel.restoreLayout(layoutData.mainArea);
-            this.registerWithFocusTracker(layoutData.mainArea.main);
+    protected getBottomPanelSize(): number | undefined {
+        const parent = this.bottomPanel.parent;
+        if (parent instanceof SplitPanel && parent.isVisible) {
+            const index = parent.widgets.indexOf(this.bottomPanel) - 1;
+            if (index >= 0) {
+                const handle = parent.handles[index];
+                if (!handle.classList.contains('p-mod-hidden')) {
+                    const parentHeight = parent.node.clientHeight;
+                    return parentHeight - handle.offsetTop;
+                }
+            }
         }
-        if (layoutData.leftPanel) {
-            this.leftPanelHandler.setLayoutData(layoutData.leftPanel);
-            this.registerWithFocusTracker(layoutData.leftPanel);
+    }
+
+    setLayoutData({ mainPanel, bottomPanel, leftPanel, rightPanel, statusBar }: ApplicationShell.LayoutData): void {
+        if (mainPanel) {
+            this.mainPanel.restoreLayout(mainPanel);
+            this.registerWithFocusTracker(mainPanel.main);
         }
-        if (layoutData.rightPanel) {
-            this.rightPanelHandler.setLayoutData(layoutData.rightPanel);
-            this.registerWithFocusTracker(layoutData.rightPanel);
+        if (bottomPanel) {
+            if (bottomPanel.config) {
+                this.bottomPanel.restoreLayout(bottomPanel.config);
+                this.registerWithFocusTracker(bottomPanel.config.main);
+            }
+            if (bottomPanel.size) {
+                this.lastBottomPanelSize = bottomPanel.size;
+            }
+            if (bottomPanel.expanded) {
+                this.expandBottomPanel();
+            } else {
+                this.collapseBottomPanel();
+            }
         }
-        if (layoutData.bottomPanel) {
-            this.bottomPanelHandler.setLayoutData(layoutData.bottomPanel);
-            this.registerWithFocusTracker(layoutData.bottomPanel);
+        if (leftPanel) {
+            this.leftPanelHandler.setLayoutData(leftPanel);
+            this.registerWithFocusTracker(leftPanel);
         }
-        if (layoutData.statusBar) {
-            this.statusBar.setLayoutData(layoutData.statusBar);
+        if (rightPanel) {
+            this.rightPanelHandler.setLayoutData(rightPanel);
+            this.registerWithFocusTracker(rightPanel);
+        }
+        if (statusBar) {
+            this.statusBar.setLayoutData(statusBar);
+        }
+    }
+
+    protected setBottomPanelSize(size: number): void {
+        const parent = this.bottomPanel.parent;
+        if (parent instanceof SplitPanel && parent.isVisible) {
+            const index = parent.widgets.indexOf(this.bottomPanel) - 1;
+            if (index >= 0) {
+                const parentHeight = parent.node.clientHeight;
+                const maxHeight = parentHeight * 0.67;
+                const position = parentHeight - Math.min(size, maxHeight);
+                SidePanel.moveSplitPos(parent, index, position);
+            }
         }
     }
 
@@ -291,22 +377,19 @@ export class ApplicationShell extends Widget {
         }
         switch (options.area) {
             case 'main':
-                if (!options.mode) {
-                    options.mode = 'tab-after';
-                }
                 this.mainPanel.addWidget(widget, options);
                 break;
             case 'top':
                 this.topPanel.addWidget(widget);
+                break;
+            case 'bottom':
+                this.bottomPanel.addWidget(widget, options);
                 break;
             case 'left':
                 this.leftPanelHandler.addWidget(widget, options);
                 break;
             case 'right':
                 this.rightPanelHandler.addWidget(widget, options);
-                break;
-            case 'bottom':
-                this.bottomPanelHandler.addWidget(widget, options);
                 break;
             default:
                 throw new Error('Illegal argument: ' + options.area);
@@ -325,12 +408,12 @@ export class ApplicationShell extends Widget {
                 return toArray(this.mainPanel.widgets());
             case 'top':
                 return toArray(this.topPanel.widgets);
+            case 'bottom':
+                return toArray(this.bottomPanel.widgets());
             case 'left':
                 return toArray(this.leftPanelHandler.dockPanel.widgets());
             case 'right':
                 return toArray(this.rightPanelHandler.dockPanel.widgets());
-            case 'bottom':
-                return toArray(this.bottomPanelHandler.dockPanel.widgets());
             default:
                 throw new Error('Illegal argument: ' + area);
         }
@@ -406,15 +489,17 @@ export class ApplicationShell extends Widget {
             this.mainPanel.activateWidget(widget);
             return widget;
         }
+        widget = find(this.bottomPanel.widgets(), w => w.id === id);
+        if (widget) {
+            this.expandBottomPanel();
+            this.bottomPanel.activateWidget(widget);
+            return widget;
+        }
         widget = this.leftPanelHandler.activate(id);
         if (widget) {
             return widget;
         }
         widget = this.rightPanelHandler.activate(id);
-        if (widget) {
-            return widget;
-        }
-        widget = this.bottomPanelHandler.activate(id);
         if (widget) {
             return widget;
         }
@@ -428,6 +513,12 @@ export class ApplicationShell extends Widget {
      */
     revealWidget(id: string): Widget | undefined {
         let widget = find(this.mainPanel.widgets(), w => w.id === id);
+        if (!widget) {
+            widget = find(this.bottomPanel.widgets(), w => w.id === id);
+            if (widget) {
+                this.expandBottomPanel();
+            }
+        }
         if (widget) {
             const tabBar = this.getTabBarFor(widget);
             if (tabBar) {
@@ -443,28 +534,75 @@ export class ApplicationShell extends Widget {
         if (widget) {
             return widget;
         }
-        widget = this.bottomPanelHandler.expand(id);
-        if (widget) {
-            return widget;
+    }
+
+    /**
+     * Expand the given side panel area.
+     */
+    expandPanel(area: ApplicationShell.Area): void {
+        switch (area) {
+            case 'bottom':
+                this.expandBottomPanel();
+                break;
+            case 'left':
+                this.leftPanelHandler.expand();
+                break;
+            case 'right':
+                this.rightPanelHandler.expand();
+                break;
+            default:
+                throw new Error('Area cannot be expanded: ' + area);
+        }
+    }
+
+    protected expandBottomPanel(): void {
+        if (this.bottomPanel.isHidden) {
+            this.bottomPanel.show();
+            if (this.lastBottomPanelSize) {
+                this.setBottomPanelSize(this.lastBottomPanelSize);
+            }
         }
     }
 
     /**
      * Collapse the given side panel area.
      */
-    collapseSidePanel(area: ApplicationShell.Area): void {
+    collapsePanel(area: ApplicationShell.Area): void {
         switch (area) {
+            case 'bottom':
+                this.collapseBottomPanel();
+                break;
             case 'left':
                 this.leftPanelHandler.collapse();
                 break;
             case 'right':
                 this.rightPanelHandler.collapse();
                 break;
-            case 'bottom':
-                this.bottomPanelHandler.collapse();
-                break;
             default:
                 throw new Error('Area cannot be collapsed: ' + area);
+        }
+    }
+
+    protected collapseBottomPanel(): void {
+        if (!this.bottomPanel.isHidden) {
+            const size = this.getBottomPanelSize();
+            if (size) {
+                this.lastBottomPanelSize = size;
+            }
+            this.bottomPanel.hide();
+        }
+    }
+
+    isExpanded(area: ApplicationShell.Area): boolean {
+        switch (area) {
+            case 'bottom':
+                return this.bottomPanel.isVisible;
+            case 'left':
+                return this.leftPanelHandler.tabBar.currentTitle !== null;
+            case 'right':
+                return this.rightPanelHandler.tabBar.currentTitle !== null;
+            default:
+                return true;
         }
     }
 
@@ -472,6 +610,8 @@ export class ApplicationShell extends Widget {
         filter?: (title: Title<Widget>, index: number) => boolean): void {
         if (tabBarOrArea === 'main') {
             this.mainAreaTabBars.forEach(tb => this.closeTabs(tb, filter));
+        } else if (tabBarOrArea === 'bottom') {
+            this.bottomAreaTabBars.forEach(tb => this.closeTabs(tb, filter));
         } else if (typeof tabBarOrArea === 'string') {
             const tabBar = this.getTabBarFor(tabBarOrArea);
             if (tabBar) {
@@ -493,20 +633,25 @@ export class ApplicationShell extends Widget {
     get currentTabArea(): ApplicationShell.Area | undefined {
         const currentWidget = this.currentWidget;
         if (currentWidget) {
-            const currentTitle = currentWidget.title;
-            const mainPanelTabBar = find(this.mainPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, currentTitle) > -1);
-            if (mainPanelTabBar) {
-                return 'main';
-            }
-            if (ArrayExt.firstIndexOf(this.leftPanelHandler.tabBar.titles, currentTitle) > -1) {
-                return 'left';
-            }
-            if (ArrayExt.firstIndexOf(this.rightPanelHandler.tabBar.titles, currentTitle) > -1) {
-                return 'right';
-            }
-            if (ArrayExt.firstIndexOf(this.bottomPanelHandler.tabBar.titles, currentTitle) > -1) {
-                return 'bottom';
-            }
+            return this.getAreaFor(currentWidget);
+        }
+    }
+
+    getAreaFor(widget: Widget): ApplicationShell.Area | undefined {
+        const title = widget.title;
+        const mainPanelTabBar = find(this.mainPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, title) > -1);
+        if (mainPanelTabBar) {
+            return 'main';
+        }
+        const bottomPanelTabBar = find(this.bottomPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, title) > -1);
+        if (bottomPanelTabBar) {
+            return 'bottom';
+        }
+        if (ArrayExt.firstIndexOf(this.leftPanelHandler.tabBar.titles, title) > -1) {
+            return 'left';
+        }
+        if (ArrayExt.firstIndexOf(this.rightPanelHandler.tabBar.titles, title) > -1) {
+            return 'right';
         }
     }
 
@@ -528,12 +673,12 @@ export class ApplicationShell extends Widget {
             switch (widgetOrArea) {
                 case 'main':
                     return this.mainPanel.tabBars().next();
+                case 'bottom':
+                    return this.bottomPanel.tabBars().next();
                 case 'left':
                     return this.leftPanelHandler.tabBar;
                 case 'right':
                     return this.rightPanelHandler.tabBar;
-                case 'bottom':
-                    return this.bottomPanelHandler.tabBar;
                 default:
                     throw new Error('Illegal argument: ' + widgetOrArea);
             }
@@ -543,6 +688,10 @@ export class ApplicationShell extends Widget {
             if (mainPanelTabBar) {
                 return mainPanelTabBar;
             }
+            const bottomPanelTabBar = find(this.bottomPanel.tabBars(), bar => ArrayExt.firstIndexOf(bar.titles, widgetTitle) > -1);
+            if (bottomPanelTabBar) {
+                return bottomPanelTabBar;
+            }
             const leftPanelTabBar = this.leftPanelHandler.tabBar;
             if (ArrayExt.firstIndexOf(leftPanelTabBar.titles, widgetTitle) > -1) {
                 return leftPanelTabBar;
@@ -551,15 +700,15 @@ export class ApplicationShell extends Widget {
             if (ArrayExt.firstIndexOf(rightPanelTabBar.titles, widgetTitle) > -1) {
                 return rightPanelTabBar;
             }
-            const bottomPanelTabBar = this.bottomPanelHandler.tabBar;
-            if (ArrayExt.firstIndexOf(bottomPanelTabBar.titles, widgetTitle) > -1) {
-                return bottomPanelTabBar;
-            }
         }
     }
 
     get mainAreaTabBars(): TabBar<Widget>[] {
         return toArray(this.mainPanel.tabBars());
+    }
+
+    get bottomAreaTabBars(): TabBar<Widget>[] {
+        return toArray(this.bottomPanel.tabBars());
     }
 
     /*
@@ -700,10 +849,16 @@ export namespace ApplicationShell {
      * Data to save and load the application shell layout.
      */
     export interface LayoutData {
-        mainArea?: DockPanel.ILayoutConfig;
+        mainPanel?: DockPanel.ILayoutConfig;
+        bottomPanel?: BottomPanelLayoutData;
         leftPanel?: SidePanel.LayoutData;
         rightPanel?: SidePanel.LayoutData;
-        bottomPanel?: SidePanel.LayoutData;
         statusBar?: StatusBarLayoutData;
+    }
+
+    export interface BottomPanelLayoutData {
+        config?: DockPanel.ILayoutConfig;
+        size?: number;
+        expanded?: boolean;
     }
 }

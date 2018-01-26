@@ -13,9 +13,8 @@ import { MimeData } from '@phosphor/coreutils';
 import { Drag } from '@phosphor/dragdrop';
 import { AttachedProperty } from '@phosphor/properties';
 import { TabBarRendererFactory, TabBarRenderer, SHELL_TABBAR_CONTEXT_MENU, SideTabBar } from './tab-bars';
+import { Message } from '@phosphor/messaging';
 
-/** The class name added to the main and bottom area panels. */
-export const MAIN_BOTTOM_AREA_CLASS = 'theia-app-centers';
 /** The class name added to the left and right area panels. */
 export const LEFT_RIGHT_AREA_CLASS = 'theia-app-sides';
 
@@ -35,20 +34,20 @@ export class SidePanelHandler {
         create: () => undefined
     });
 
-    @inject(TabBarRendererFactory) protected tabBarRendererFactory: () => TabBarRenderer;
-
-    protected side: 'left' | 'right' | 'bottom';
-    protected lastActiveTabIndex?: number;
-    protected lastPanelSize?: number;
-
     tabBar: SideTabBar;
     dockPanel: TheiaDockPanel;
     container: Panel;
 
+    @inject(TabBarRendererFactory) protected tabBarRendererFactory: () => TabBarRenderer;
+
+    protected side: 'left' | 'right';
+    protected lastActiveTabIndex?: number;
+    protected lastPanelSize?: number;
+
     /**
      * Create the side bar and dock panel widgets.
      */
-    create(side: 'left' | 'right' | 'bottom'): void {
+    create(side: 'left' | 'right'): void {
         this.side = side;
         this.tabBar = this.createSideBar();
         this.dockPanel = this.createSidePanel();
@@ -70,13 +69,8 @@ export class SidePanelHandler {
         });
         tabBarRenderer.tabBar = sideBar;
         tabBarRenderer.contextMenuPath = SHELL_TABBAR_CONTEXT_MENU;
-
         sideBar.addClass('theia-app-' + side);
-        if (side === 'left' || side === 'right') {
-            sideBar.addClass(LEFT_RIGHT_AREA_CLASS);
-        } else {
-            sideBar.addClass(MAIN_BOTTOM_AREA_CLASS);
-        }
+        sideBar.addClass(LEFT_RIGHT_AREA_CLASS);
 
         sideBar.tabAdded.connect(this.onTabAdded, this);
         sideBar.currentChanged.connect(this.onCurrentTabChanged, this);
@@ -92,6 +86,12 @@ export class SidePanelHandler {
             mode: 'single-document'
         });
         sidePanel.id = 'theia-' + this.side + '-stack';
+
+        sidePanel.panelAttached.connect(sender => {
+            if (!sidePanel.isHidden && this.lastPanelSize) {
+                this.setPanelSize(this.lastPanelSize);
+            }
+        }, this);
         sidePanel.widgetAdded.connect(this.onWidgetAdded, this);
         sidePanel.widgetActivated.connect(this.onWidgetActivated, this);
         sidePanel.widgetRemoved.connect(this.onWidgetRemoved, this);
@@ -107,9 +107,6 @@ export class SidePanelHandler {
                 break;
             case 'right':
                 direction = 'right-to-left';
-                break;
-            case 'bottom':
-                direction = 'top-to-bottom';
                 break;
             default:
                 throw new Error('Illegal argument: ' + side);
@@ -131,22 +128,33 @@ export class SidePanelHandler {
             rank: SidePanelHandler.rankProperty.get(title.owner),
             expanded: title === currentTitle
         }));
-        return { type: 'sidebar', items };
+        const size = this.tabBar.currentTitle ? this.getPanelSize() : this.lastPanelSize;
+        return { type: 'sidebar', items, size };
     }
 
     setLayoutData(layoutData: SidePanel.LayoutData) {
         this.tabBar.currentTitle = null;
+
+        let currentTitle: Title<Widget> | undefined;
         if (layoutData.items) {
             for (const item of layoutData.items) {
                 if (item.widget) {
                     this.addWidget(item.widget, item);
                     if (item.expanded) {
-                        this.tabBar.currentTitle = item.widget.title;
+                        currentTitle = item.widget.title;
                     }
                 }
             }
         }
-        this.refresh();
+        if (layoutData.size) {
+            this.lastPanelSize = layoutData.size;
+        }
+
+        if (currentTitle) {
+            this.tabBar.currentTitle = currentTitle;
+        } else {
+            this.refresh();
+        }
     }
 
     /**
@@ -226,29 +234,36 @@ export class SidePanelHandler {
      * Refresh the visibility of the side bar and dock panel.
      */
     refresh(): void {
-        const hideSideBar = this.tabBar.titles.length === 0;
-        const currentTitle = this.tabBar.currentTitle;
+        const container = this.container;
+        const tabBar = this.tabBar;
+        const dockPanel = this.dockPanel;
+        const hideSideBar = tabBar.titles.length === 0;
+        const currentTitle = tabBar.currentTitle;
         const hideDockPanel = currentTitle === null;
+
         if (hideDockPanel) {
-            this.container.addClass(COLLAPSED_CLASS);
-            this.lastPanelSize = this.getPanelSize();
+            container.addClass(COLLAPSED_CLASS);
+            const size = this.getPanelSize();
+            if (size) {
+                this.lastPanelSize = size;
+            }
         } else {
-            this.container.removeClass(COLLAPSED_CLASS);
-            if (this.dockPanel.isHidden && this.lastPanelSize) {
+            container.removeClass(COLLAPSED_CLASS);
+            if (dockPanel.isHidden && this.lastPanelSize) {
                 this.setPanelSize(this.lastPanelSize);
             }
         }
-        this.container.setHidden(hideSideBar && hideDockPanel);
-        this.tabBar.setHidden(hideSideBar);
-        this.dockPanel.setHidden(hideDockPanel);
+        container.setHidden(hideSideBar && hideDockPanel);
+        tabBar.setHidden(hideSideBar);
+        dockPanel.setHidden(hideDockPanel);
         if (currentTitle) {
-            this.dockPanel.selectWidget(currentTitle.owner);
+            dockPanel.selectWidget(currentTitle.owner);
         }
     }
 
     protected getPanelSize(): number | undefined {
         const parent = this.container.parent;
-        if (parent instanceof SplitPanel) {
+        if (parent instanceof SplitPanel && parent.isVisible) {
             const index = parent.widgets.indexOf(this.container);
             if (this.side === 'left') {
                 const handle = parent.handles[index];
@@ -267,24 +282,22 @@ export class SidePanelHandler {
 
     protected setPanelSize(size: number): void {
         const parent = this.container.parent;
-        if (parent instanceof SplitPanel && size > 0) {
+        if (parent instanceof SplitPanel && parent.isVisible && size > 0) {
             let index = parent.widgets.indexOf(this.container);
             if (this.side === 'right') {
                 index--;
             }
 
             const parentWidth = parent.node.clientWidth;
-            const maxWidth = parentWidth / 3;
-            let position: number;
+            const maxWidth = parentWidth * 0.4;
+            let position: number = 0;
             if (this.side === 'left') {
                 position = Math.min(size, maxWidth);
             } else if (this.side === 'right') {
                 position = parentWidth - Math.min(size, maxWidth);
             }
 
-            window.requestAnimationFrame(() => {
-                (parent.layout as SplitLayout).moveHandle(index, position);
-            });
+            SidePanel.moveSplitPos(parent, index, position);
         }
     }
 
@@ -419,6 +432,7 @@ export namespace SidePanel {
     export interface LayoutData {
         type: 'sidebar',
         items?: WidgetItem[];
+        size?: number;
     }
 
     /**
@@ -457,6 +471,22 @@ export namespace SidePanel {
             callback(drag);
         }
     }
+
+    const splitMoves: { parent: SplitPanel, index: number, position: number }[] = [];
+
+    export function moveSplitPos(parent: SplitPanel, index: number, position: number) {
+        if (splitMoves.length === 0) {
+            const callback = () => {
+                const move = splitMoves.splice(0, 1)[0];
+                (move.parent.layout as SplitLayout).moveHandle(move.index, move.position);
+                if (splitMoves.length > 0) {
+                    window.requestAnimationFrame(callback);
+                }
+            };
+            window.requestAnimationFrame(callback);
+        }
+        splitMoves.push({ parent, index, position });
+    }
 }
 
 /**
@@ -465,6 +495,7 @@ export namespace SidePanel {
 export class TheiaDockPanel extends DockPanel {
 
     private __drag?: Drag;
+    private attachDone = false;
 
     constructor(options?: DockPanel.IOptions) {
         super(options);
@@ -484,6 +515,7 @@ export class TheiaDockPanel extends DockPanel {
         });
     }
 
+    readonly panelAttached = new Signal<this, void>(this);
     readonly widgetAdded = new Signal<this, Widget>(this);
     readonly widgetActivated = new Signal<this, Widget>(this);
     readonly widgetRemoved = new Signal<this, Widget>(this);
@@ -504,6 +536,24 @@ export class TheiaDockPanel extends DockPanel {
     protected onChildRemoved(msg: Widget.ChildMessage): void {
         super.onChildRemoved(msg);
         this.widgetRemoved.emit(msg.child);
+    }
+
+    protected onFitRequest(msg: Message): void {
+        super.onFitRequest(msg);
+        if (this.isEmpty) {
+            const minSizeValue = `${SidePanel.EMPTY_PANEL_SIZE}px`;
+            this.node.style.minWidth = minSizeValue;
+            this.node.style.minHeight = minSizeValue;
+        }
+        if (!this.attachDone && this.isAttached) {
+            this.panelAttached.emit(undefined);
+            this.attachDone = true;
+        }
+    }
+
+    protected onAfterDetach(msg: Message): void {
+        super.onAfterDetach(msg);
+        this.attachDone = false;
     }
 
 }

@@ -8,9 +8,8 @@
   --theia-private-horizontal-tab-active-top-border: 2px;
 }
 
-
 /*-----------------------------------------------------------------------------
-| Tabs in the center area (main and bottom)
+| General tab bar style
 |----------------------------------------------------------------------------*/
 
 .p-TabBar {
@@ -53,6 +52,11 @@
 .p-TabBar[data-orientation='horizontal'] .p-TabBar-tab:first-child {
   margin-left: 0;
 }
+
+
+/*-----------------------------------------------------------------------------
+| Tabs in the center area (main and bottom)
+|----------------------------------------------------------------------------*/
 
 /* This is a current tab of a tab bar: each tab bar has 1. */
 .p-TabBar.theia-app-centers .p-TabBar-tab.p-mod-current {
@@ -100,15 +104,31 @@
   background-image: var(--theia-icon-circle);
 }
 
+
+/*-----------------------------------------------------------------------------
+| Dragged tabs
+|----------------------------------------------------------------------------*/
+
 .p-TabBar-tab.p-mod-drag-image {
+  transform: translateX(-40%) translateY(-58%);
+  opacity: 0.8;
+  min-height: var(--theia-private-horizontal-tab-height);
+  padding: 0px 10px;
+  font-size: var(--theia-ui-font-size1);
+  line-height: var(--theia-private-horizontal-tab-height);
+  color: var(--theia-ui-font-color1);
   background: var(--theia-layout-color1);
   border: var(--theia-border-width) solid var(--theia-border-color1);
   border-top: var(--theia-border-width) solid var(--theia-brand-color1);
   box-shadow: 1px 1px 2px rgba(0, 0, 0, 0.3);
-  color: var(--theia-ui-font-color1);
-  font-size: var(--theia-ui-font-size1);
-  line-height: var(--theia-private-horizontal-tab-height);
-  min-height: var(--theia-private-horizontal-tab-height);
-  padding: 0px 10px;
-  transform: translateX(-40%) translateY(-58%);
+}
+
+.p-TabBar-tab.p-mod-drag-image .p-TabBar-tabIcon,
+.p-TabBar-tab.p-mod-drag-image .p-TabBar-tabLabel {
+  display: inline-block;
+}
+
+.p-TabBar-tab.p-mod-drag-image .p-TabBar-tabIcon {
+  width: 15px;
+  line-height: 1.7;
 }
