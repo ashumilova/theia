@@ -7,7 +7,7 @@
 
 .theia-CallHierarchyTree {
     font-size: var(--theia-ui-font-size1);
-    color: var(--theia-ui-font-color0);
+    color: var(--theia-ui-font-color1);
 }
 
 .theia-CallHierarchyTree .theia-TreeNode {
@@ -37,7 +37,6 @@
 .theia-CallHierarchyTree .definitionNode .symbol {
     white-space: nowrap;
     overflow: hidden;
-    font-weight: bold;
 }
 
 .theia-CallHierarchyTree .definitionNode .referenceCount {
