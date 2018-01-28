@@ -12,6 +12,8 @@ import { CallHierarchyService } from '@theia/callhierarchy/lib/browser/callhiera
 import { MockLanguageClientProvider } from '@theia/callhierarchy/lib/browser/test';
 import { LanguageClientProvider } from '@theia/callhierarchy/lib/browser/language-client-provider';
 import { Location, Range } from 'vscode-languageserver-types';
+import { ILogger } from '@theia/core';
+import { MockLogger } from '@theia/core/lib/common/test/mock-logger';
 
 let testContainer: Container;
 
@@ -19,6 +21,7 @@ before(async () => {
     testContainer = new Container();
     testContainer.bind(LanguageClientProvider).to(MockLanguageClientProvider).inSingletonScope();
     testContainer.bind(CallHierarchyService).to(TypeScriptCallHierarchyService).inSingletonScope();
+    testContainer.bind(ILogger).to(MockLogger).inSingletonScope();
 });
 
 let callHierarchyService: TypeScriptCallHierarchyService;

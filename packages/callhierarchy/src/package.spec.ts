@@ -13,7 +13,7 @@
    This file can be removed once we have real unit
    tests in place. */
 
-describe("output package", () => {
+describe("callhierarchy package", () => {
 
     it("support code coverage statistics", () => true);
 });
