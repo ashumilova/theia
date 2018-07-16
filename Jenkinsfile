@@ -8,7 +8,7 @@ def envStage = utils.environmentNamespace('stage')
 def envProd = utils.environmentNamespace('run')
 def setupScript = null
 
-mavenNode {
+mavenNodeqqq {
   checkout scm
   if (utils.isCI()) {
 
